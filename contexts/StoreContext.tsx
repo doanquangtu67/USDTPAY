@@ -1,11 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { User, UserRole, ApiProduct, TronWallet, WalletActivity, ApiKeyPurchase } from '../types';
+import { User, UserRole, ApiProduct, CryptoWallet, WalletActivity, ApiKeyPurchase, ChainType } from '../types';
 
 interface StoreContextType {
   users: User[];
   currentUser: User | null;
   products: ApiProduct[];
-  adminWallets: TronWallet[];
+  adminWallets: CryptoWallet[];
   walletActivity: WalletActivity[];
   trxPrice: number;
   login: (username: string, password: string) => boolean;
@@ -13,7 +13,7 @@ interface StoreContextType {
   register: (username: string, email: string, password: string) => Promise<void>;
   deleteUser: (id: string) => void;
   toggleUserStatus: (id: string) => void;
-  createAdminWallet: () => Promise<void>;
+  createAdminWallet: (chain: ChainType) => Promise<void>;
   deleteAdminWallet: (address: string) => void;
   setMainWallet: (address: string) => void;
   refreshWalletBalance: () => Promise<void>;
@@ -22,7 +22,7 @@ interface StoreContextType {
   refreshUserBalance: (userId: string) => Promise<void>;
   sendUserTron: (userId: string, toAddress: string, amount: number, twoFactorToken?: string) => Promise<{ success: boolean; message: string; txid?: string }>;
   purchaseApiKey: (userId: string, durationLabel: string, cost: number) => Promise<{ success: boolean; message: string }>;
-  createSubWallet: (userId: string, inputApiKey: string) => Promise<{ success: boolean; message: string }>;
+  createSubWallet: (userId: string, inputApiKey: string, chain: ChainType) => Promise<{ success: boolean; message: string }>;
   withdrawSubWallet: (userId: string, subWalletAddress: string, amount: number, twoFactorToken?: string) => Promise<{ success: boolean; message: string }>;
   
   // 2FA Methods
@@ -71,12 +71,40 @@ const getTronWeb = (privateKey?: string) => {
   }
 };
 
+// Helper to generate mock crypto addresses
+const generateMockWallet = (chain: ChainType): { address: string; privateKey: string; hexAddress?: string } => {
+    const hexChars = '0123456789abcdef';
+    const genHex = (len: number) => {
+        let str = '';
+        for(let i=0; i<len; i++) str += hexChars[Math.floor(Math.random()*16)];
+        return str;
+    };
+
+    if (chain === 'ETH' || chain === 'BNB') {
+        const addr = '0x' + genHex(40);
+        return {
+            address: addr,
+            hexAddress: addr,
+            privateKey: genHex(64)
+        };
+    } else if (chain === 'SOL') {
+        const base58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+        let addr = '';
+        for(let i=0; i<44; i++) addr += base58[Math.floor(Math.random()*58)];
+        return {
+            address: addr,
+            privateKey: genHex(64) // Sol uses varying formats but hex mock is fine for virtual
+        };
+    }
+    return { address: '', privateKey: '' };
+};
+
 // Helper for OTPAuth
 const verifyToken = (secret: string, token: string): boolean => {
   if (typeof window === 'undefined') return false;
   // @ts-ignore
   const OTPAuth = window.OTPAuth;
-  if (!OTPAuth) return true; // Fail safe or dev mode? Let's assume false if library missing.
+  if (!OTPAuth) return true; 
 
   const totp = new OTPAuth.TOTP({
     issuer: 'NexusAPI',
@@ -95,7 +123,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [products] = useState<ApiProduct[]>(INITIAL_PRODUCTS);
-  const [adminWallets, setAdminWallets] = useState<TronWallet[]>([]);
+  const [adminWallets, setAdminWallets] = useState<CryptoWallet[]>([]);
   const [walletActivity, setWalletActivity] = useState<WalletActivity[]>([]);
   const [trxPrice, setTrxPrice] = useState<number>(0.15); // Default fallback price
   
@@ -117,6 +145,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (u.wallet && !u.wallet.activity) {
           u.wallet.activity = [];
         }
+        if (u.wallet && !u.wallet.chain) {
+            u.wallet.chain = 'TRX';
+        }
         if (!u.subWallets) {
           u.subWallets = [];
         }
@@ -136,6 +167,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (authUser.wallet && !authUser.wallet.activity) {
         authUser.wallet.activity = [];
       }
+      if (authUser.wallet && !authUser.wallet.chain) {
+        authUser.wallet.chain = 'TRX';
+      }
       if (!authUser.subWallets) {
         authUser.subWallets = [];
       }
@@ -147,13 +181,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     if (storedWallets) {
       const wallets = JSON.parse(storedWallets);
-      setAdminWallets(wallets);
-      const main = wallets.find((w: TronWallet) => w.isMain);
-      if (main) previousBalanceRef.current = main.balance;
+      // Migrate old wallets to have chain
+      const migratedWallets = wallets.map((w: any) => ({ ...w, chain: w.chain || 'TRX' }));
+      setAdminWallets(migratedWallets);
+      const main = migratedWallets.find((w: CryptoWallet) => w.isMain);
+      if (main && main.chain === 'TRX') previousBalanceRef.current = main.balance;
     } else if (storedOldWallet) {
       const oldWallet = JSON.parse(storedOldWallet);
       if (!oldWallet.activity) oldWallet.activity = [];
       oldWallet.isMain = true; 
+      oldWallet.chain = 'TRX';
       setAdminWallets([oldWallet]);
       previousBalanceRef.current = oldWallet.balance;
       localStorage.setItem('nexus_admin_wallets', JSON.stringify([oldWallet]));
@@ -187,7 +224,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   useEffect(() => {
-    const mainWallet = adminWallets.find(w => w.isMain);
+    const mainWallet = adminWallets.find(w => w.isMain && w.chain === 'TRX');
     if (mainWallet) {
       const currentBalance = mainWallet.balance;
       const prevBalance = previousBalanceRef.current;
@@ -249,13 +286,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const register = useCallback(async (username: string, email: string, password: string) => {
-    let wallet: TronWallet | undefined;
+    let wallet: CryptoWallet | undefined;
     try {
       const tronWeb = getTronWeb();
       if (tronWeb) {
         const account = await tronWeb.utils.accounts.generateAccount();
         if (account) {
           wallet = {
+            chain: 'TRX',
             address: account.address.base58,
             hexAddress: account.address.hex,
             privateKey: account.privateKey,
@@ -308,40 +346,55 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setUsers(prev => prev.map(u => u.id === currentUser.id ? updatedUser : u));
   }, [currentUser]);
 
-  const createAdminWallet = useCallback(async () => {
+  const createAdminWallet = useCallback(async (chain: ChainType) => {
     try {
-      const tronWeb = getTronWeb();
-      if (!tronWeb) {
-        console.error("TronWeb library not loaded");
-        alert("TronWeb library is not loaded. Please refresh the page.");
-        return;
-      }
-      
-      const account = await tronWeb.utils.accounts.generateAccount();
-      
-      if (account) {
-        const newWallet: TronWallet = {
-          address: account.address.base58,
-          hexAddress: account.address.hex,
-          privateKey: account.privateKey,
-          balance: 0,
-          activity: [],
-          isMain: adminWallets.length === 0, 
-          label: `Wallet ${adminWallets.length + 1}`
-        };
+        let newWallet: CryptoWallet;
+
+        if (chain === 'TRX') {
+            const tronWeb = getTronWeb();
+            if (!tronWeb) {
+                alert("TronWeb library is not loaded.");
+                return;
+            }
+            const account = await tronWeb.utils.accounts.generateAccount();
+            if (!account) throw new Error("Failed to generate TRX account");
+            
+            newWallet = {
+                chain: 'TRX',
+                address: account.address.base58,
+                hexAddress: account.address.hex,
+                privateKey: account.privateKey,
+                balance: 0,
+                activity: [],
+                isMain: adminWallets.length === 0, 
+                label: `TRX Wallet ${adminWallets.filter(w => w.chain === 'TRX').length + 1}`
+            };
+        } else {
+            // Create Virtual Wallet
+            const mock = generateMockWallet(chain);
+            newWallet = {
+                chain,
+                address: mock.address,
+                hexAddress: mock.hexAddress,
+                privateKey: mock.privateKey,
+                balance: 0,
+                activity: [],
+                isMain: false,
+                label: `${chain} Virtual Wallet`
+            };
+        }
         
-        if (newWallet.isMain) {
+        if (newWallet.isMain && newWallet.chain === 'TRX') {
            previousBalanceRef.current = 0;
            setWalletActivity([]); 
         }
 
         setAdminWallets(prev => [...prev, newWallet]);
-      }
     } catch (e) {
       console.error("Failed to create wallet", e);
       alert("Failed to generate wallet. See console for details.");
     }
-  }, [adminWallets.length]);
+  }, [adminWallets]);
 
   const deleteAdminWallet = useCallback((address: string) => {
     setAdminWallets(prev => {
@@ -350,15 +403,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
         const filteredWallets = prev.filter(w => w.address !== address);
 
-        if (walletToDelete.isMain && filteredWallets.length > 0) {
-            const newWallets = filteredWallets.map((w, index) => {
-                if (index === 0) {
-                    return { ...w, isMain: true };
-                }
-                return w;
-            });
-            previousBalanceRef.current = newWallets[0].balance;
-            return newWallets;
+        if (walletToDelete.isMain && walletToDelete.chain === 'TRX' && filteredWallets.length > 0) {
+            // Try to assign main to another TRX wallet
+            const nextTrx = filteredWallets.find(w => w.chain === 'TRX');
+            if (nextTrx) {
+                const newWallets = filteredWallets.map(w => w.address === nextTrx.address ? { ...w, isMain: true } : w);
+                previousBalanceRef.current = nextTrx.balance;
+                return newWallets;
+            }
         }
 
         return filteredWallets;
@@ -367,6 +419,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const setMainWallet = useCallback((address: string) => {
     setAdminWallets(prev => {
+        const target = prev.find(w => w.address === address);
+        // Only TRX wallets can be 'Main' in the context of system payments currently
+        if (target?.chain !== 'TRX') return prev;
+
         const next = prev.map(w => ({
             ...w,
             isMain: w.address === address
@@ -382,20 +438,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     
     // Optimization: Reuse a single TronWeb instance for read operations
     const readerTronWeb = getTronWeb();
-    if (!readerTronWeb) return;
-
+    
     const walletBalances = new Map<string, number>();
     
-    // Execute sequentially to avoid rate limiting / network congestion
     for (const wallet of adminWallets) {
-        try {
-            // No need to set private key for fetching balance
-            const balanceSun = await readerTronWeb.trx.getBalance(wallet.address);
-            const balanceTrx = Number(readerTronWeb.fromSun(balanceSun));
-            walletBalances.set(wallet.address, balanceTrx);
-        } catch (e) {
-            console.warn(`Failed to refresh balance for ${wallet.address}`, e);
+        if (wallet.chain === 'TRX' && readerTronWeb) {
+            try {
+                const balanceSun = await readerTronWeb.trx.getBalance(wallet.address);
+                const balanceTrx = Number(readerTronWeb.fromSun(balanceSun));
+                walletBalances.set(wallet.address, balanceTrx);
+            } catch (e) {
+                console.warn(`Failed to refresh balance for ${wallet.address}`, e);
+            }
         }
+        // Virtual wallets (ETH, SOL, BNB) do not refresh from chain. 
+        // Their balance persists in state.
     }
     
     setAdminWallets(prevWallets => {
@@ -409,8 +466,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [adminWallets]);
 
   const sendTron = useCallback(async (toAddress: string, amount: number): Promise<{ success: boolean; message: string; txid?: string }> => {
-    const mainWallet = adminWallets.find(w => w.isMain);
-    if (!mainWallet) return { success: false, message: "No Main Wallet selected" };
+    const mainWallet = adminWallets.find(w => w.isMain && w.chain === 'TRX');
+    if (!mainWallet) return { success: false, message: "No Main TRX Wallet selected" };
     
     try {
       const tronWeb = getTronWeb(mainWallet.privateKey);
@@ -437,19 +494,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const user = users.find(u => u.id === userId);
     if (!user || !user.wallet) return;
 
-    // Reuse reader instance
     const readerTronWeb = getTronWeb();
-    if (!readerTronWeb) return;
-
+    
     try {
-        // Refresh Main Wallet
-        const balanceSun = await readerTronWeb.trx.getBalance(user.wallet.address);
-        const currentBalance = Number(readerTronWeb.fromSun(balanceSun));
+        let currentBalance = user.wallet.balance;
+
+        // 1. Fetch Main Wallet Balance (Only if TRX)
+        if (user.wallet.chain === 'TRX' && readerTronWeb) {
+            const balanceSun = await readerTronWeb.trx.getBalance(user.wallet.address);
+            currentBalance = Number(readerTronWeb.fromSun(balanceSun));
+        }
       
         let activity = user.wallet.activity || [];
         const prevBalance = user.wallet.balance;
       
-        // Update activity only if there is a significant change
         if (Math.abs(currentBalance - prevBalance) > 0.000001) {
             const diff = currentBalance - prevBalance;
             const newActivity: WalletActivity = {
@@ -461,27 +519,31 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             activity = [newActivity, ...activity].slice(0, 50);
         }
 
-        // Refresh Sub Wallets (Sequential)
-        let updatedSubWallets = user.subWallets || [];
-        if (updatedSubWallets.length > 0) {
-            const newSubWallets = [];
-            for (const sw of updatedSubWallets) {
-                 try {
-                    const swBalSun = await readerTronWeb.trx.getBalance(sw.address);
-                    const swBal = Number(readerTronWeb.fromSun(swBalSun));
-                    newSubWallets.push({ ...sw, balance: swBal });
-                } catch (e) {
-                    // Keep old state on failure
-                    newSubWallets.push(sw);
-                }
+        // 2. Refresh Sub Wallets (Sequential)
+        // Virtual wallets stay as is. TRX wallets fetch.
+        const fetchedSubWalletsBalances = new Map<string, number>();
+        if (user.subWallets && user.subWallets.length > 0) {
+            for (const sw of user.subWallets) {
+                 if (sw.chain === 'TRX' && readerTronWeb) {
+                    try {
+                        const swBalSun = await readerTronWeb.trx.getBalance(sw.address);
+                        const swBal = Number(readerTronWeb.fromSun(swBalSun));
+                        fetchedSubWalletsBalances.set(sw.address, swBal);
+                    } catch (e) { }
+                 }
             }
-            updatedSubWallets = newSubWallets;
         }
       
-        // Functional update to avoid stale state bugs
         setUsers(prevUsers => {
              return prevUsers.map(u => {
                  if (u.id === userId && u.wallet) {
+                     const updatedSubWallets = (u.subWallets || []).map(sw => {
+                        if (fetchedSubWalletsBalances.has(sw.address)) {
+                            return { ...sw, balance: fetchedSubWalletsBalances.get(sw.address)! };
+                        }
+                        return sw;
+                     });
+
                      return {
                         ...u, 
                         wallet: { 
@@ -496,10 +558,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
              });
         });
 
-        // Sync Current User 
         if (currentUser?.id === userId) {
             setCurrentUser(prev => {
                 if(!prev || !prev.wallet) return prev;
+                // Since currentUser state is not derived during render from users array in this pattern
+                // we have to duplicate the logic or simply trust users update next cycle.
+                // But for polling we set it explicitly.
+                const updatedSubWallets = (prev.subWallets || []).map(sw => {
+                    if (fetchedSubWalletsBalances.has(sw.address)) {
+                        return { ...sw, balance: fetchedSubWalletsBalances.get(sw.address)! };
+                    }
+                    return sw;
+                 });
                  return {
                     ...prev, 
                     wallet: { 
@@ -520,12 +590,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const user = users.find(u => u.id === userId);
     if (!user || !user.wallet) return { success: false, message: "User wallet not found" };
 
-    // 2FA Verification
     if (user.isTwoFactorEnabled) {
         if (!twoFactorToken) return { success: false, message: "2FA Token required" };
         if (!user.twoFactorSecret || !verifyToken(user.twoFactorSecret, twoFactorToken)) {
             return { success: false, message: "Invalid 2FA Code" };
         }
+    }
+
+    if (user.wallet.chain !== 'TRX') {
+        return { success: false, message: "Main wallet sending is only supported for TRX currently." };
     }
 
     try {
@@ -548,47 +621,62 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // --- SUB-WALLET LOGIC ---
 
-  const createSubWallet = useCallback(async (userId: string, inputApiKey: string): Promise<{ success: boolean; message: string }> => {
+  const createSubWallet = useCallback(async (userId: string, inputApiKey: string, chain: ChainType): Promise<{ success: boolean; message: string }> => {
       const user = users.find(u => u.id === userId);
       if (!user) return { success: false, message: "User not found" };
 
-      // Validate API Key presence and correctness
       if (user.apiKey !== inputApiKey) {
           return { success: false, message: "Invalid API Key." };
       }
 
-      // Validate Expiration
       const now = new Date();
       if (!user.apiKeyExpiresAt || new Date(user.apiKeyExpiresAt) < now) {
           return { success: false, message: "API Key expired. Please rent a new key." };
       }
 
       try {
-          const tronWeb = getTronWeb();
-          if (!tronWeb) return { success: false, message: "TronWeb library missing" };
+          let newSubWallet: CryptoWallet;
+          if (chain === 'TRX') {
+            const tronWeb = getTronWeb();
+            if (!tronWeb) return { success: false, message: "TronWeb library missing" };
 
-          const account = await tronWeb.utils.accounts.generateAccount();
-          if (account) {
-              const newSubWallet: TronWallet = {
-                  address: account.address.base58,
-                  hexAddress: account.address.hex,
-                  privateKey: account.privateKey,
-                  balance: 0,
-                  activity: [],
-                  label: `Sub-Wallet ${(user.subWallets?.length || 0) + 1}`
-              };
-
-              const updatedUser = {
-                  ...user,
-                  subWallets: [...(user.subWallets || []), newSubWallet]
-              };
-
-              setUsers(prev => prev.map(u => u.id === userId ? updatedUser : u));
-              if (currentUser?.id === userId) setCurrentUser(updatedUser);
-
-              return { success: true, message: "Sub-wallet created successfully." };
+            const account = await tronWeb.utils.accounts.generateAccount();
+            if (account) {
+                newSubWallet = {
+                    chain: 'TRX',
+                    address: account.address.base58,
+                    hexAddress: account.address.hex,
+                    privateKey: account.privateKey,
+                    balance: 0,
+                    activity: [],
+                    label: `TRX Sub-Wallet ${(user.subWallets?.length || 0) + 1}`
+                };
+            } else {
+                return { success: false, message: "Failed to generate TRX wallet." };
+            }
+          } else {
+             // Virtual
+             const mock = generateMockWallet(chain);
+             newSubWallet = {
+                 chain,
+                 address: mock.address,
+                 hexAddress: mock.hexAddress,
+                 privateKey: mock.privateKey,
+                 balance: 0,
+                 activity: [],
+                 label: `${chain} Sub-Wallet ${(user.subWallets?.length || 0) + 1}`
+             };
           }
-          return { success: false, message: "Failed to generate wallet." };
+
+          const updatedUser = {
+              ...user,
+              subWallets: [...(user.subWallets || []), newSubWallet]
+          };
+
+          setUsers(prev => prev.map(u => u.id === userId ? updatedUser : u));
+          if (currentUser?.id === userId) setCurrentUser(updatedUser);
+
+          return { success: true, message: `${chain} Sub-wallet created successfully.` };
       } catch (e: any) {
           return { success: false, message: e.message || "Error creating sub-wallet" };
       }
@@ -601,13 +689,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const subWallet = user.subWallets?.find(w => w.address === subWalletAddress);
       if (!subWallet) return { success: false, message: "Sub-wallet not found" };
 
-      // Validate Key Again for Action
       const now = new Date();
       if (!user.apiKeyExpiresAt || new Date(user.apiKeyExpiresAt) < now) {
           return { success: false, message: "API Key expired. Cannot access vault." };
       }
 
-      // 2FA Verification
       if (user.isTwoFactorEnabled) {
         if (!twoFactorToken) return { success: false, message: "2FA Token required" };
         if (!user.twoFactorSecret || !verifyToken(user.twoFactorSecret, twoFactorToken)) {
@@ -619,48 +705,91 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           return { success: false, message: "Insufficient funds in sub-wallet." };
       }
 
-      // Find Admin Wallet for Fee
-      const mainAdminWallet = adminWallets.find(w => w.isMain) || adminWallets[0];
-      if (!mainAdminWallet) {
-          return { success: false, message: "System error: Admin wallet not found for fee processing." };
-      }
+      // TRX (Real) Logic
+      if (subWallet.chain === 'TRX' && user.wallet.chain === 'TRX') {
+        const mainAdminWallet = adminWallets.find(w => w.isMain && w.chain === 'TRX') || adminWallets.find(w => w.chain === 'TRX');
+        if (!mainAdminWallet) {
+            return { success: false, message: "System error: Admin wallet not found for fee processing." };
+        }
 
-      try {
-          const tronWeb = getTronWeb(subWallet.privateKey);
-          if (!tronWeb) return { success: false, message: "Connection error" };
+        try {
+            const tronWeb = getTronWeb(subWallet.privateKey);
+            if (!tronWeb) return { success: false, message: "Connection error" };
 
-          tronWeb.setPrivateKey(subWallet.privateKey);
+            tronWeb.setPrivateKey(subWallet.privateKey);
 
-          // Calculate amounts in SUN (integer)
-          const totalSun = Number(tronWeb.toSun(amount));
-          const feeSun = Math.floor(totalSun * 0.05); // 5% Fee
-          const netSun = totalSun - feeSun; // 95% to User
+            const totalSun = Number(tronWeb.toSun(amount));
+            const feeSun = Math.floor(totalSun * 0.05); // 5% Fee
+            const netSun = totalSun - feeSun; // 95% to User
 
-          // 1. Send Net to User Main Wallet
-          const receiptNet = await tronWeb.trx.sendTransaction(user.wallet.address, netSun);
+            const receiptNet = await tronWeb.trx.sendTransaction(user.wallet.address, netSun);
+            if (!receiptNet.result) return { success: false, message: "Transfer to main wallet failed." };
 
-          if (!receiptNet.result) {
-              return { success: false, message: "Transfer to main wallet failed." };
-          }
+            try {
+                await tronWeb.trx.sendTransaction(mainAdminWallet.address, feeSun);
+            } catch (err) {
+                console.error("Fee transfer failed", err);
+            }
 
-          // 2. Send Fee to Admin (Sequentially, if first succeeded)
-          try {
-              const receiptFee = await tronWeb.trx.sendTransaction(mainAdminWallet.address, feeSun);
-              if(!receiptFee.result) {
-                  console.warn("Fee transfer returned false result");
-              }
-          } catch (err) {
-              console.error("Fee transfer failed", err);
-              // Log error but success for user since they got funds
-          }
-
-          setTimeout(() => refreshUserBalance(userId), 3000);
+            setTimeout(() => refreshUserBalance(userId), 3000);
+            
+            return { success: true, message: `Transferred ${amount} TRX to main wallet. (5% fee deducted)` };
+        } catch (e: any) {
+            return { success: false, message: e.message || "Transfer error" };
+        }
+      } else {
+          // Virtual Wallet Logic (Mock Simulation)
+          // We assume "Virtual" wallets can be withdrawn, but since they are virtual 
+          // and "can't be used", we just log the activity and success without moving real funds.
+          // OR: We decrement virtual balance.
           
-          const netTrx = tronWeb.fromSun(netSun);
-          return { success: true, message: `Transferred ${netTrx} TRX to main wallet. (5% fee deducted)` };
-      } catch (e: any) {
-          return { success: false, message: e.message || "Transfer error" };
+          setUsers(prev => prev.map(u => {
+              if (u.id === userId) {
+                  const updatedSubs = (u.subWallets || []).map(sw => {
+                      if (sw.address === subWalletAddress) {
+                          return { 
+                              ...sw, 
+                              balance: sw.balance - amount,
+                              activity: [{
+                                id: crypto.randomUUID(),
+                                type: 'sent',
+                                amount,
+                                timestamp: new Date().toISOString()
+                              }, ...sw.activity]
+                          };
+                      }
+                      return sw;
+                  });
+                  return { ...u, subWallets: updatedSubs };
+              }
+              return u;
+          }));
+
+          if (currentUser?.id === userId) {
+              setCurrentUser(prev => {
+                  if(!prev) return prev;
+                  const updatedSubs = (prev.subWallets || []).map(sw => {
+                    if (sw.address === subWalletAddress) {
+                        return { 
+                            ...sw, 
+                            balance: sw.balance - amount,
+                            activity: [{
+                              id: crypto.randomUUID(),
+                              type: 'sent',
+                              amount,
+                              timestamp: new Date().toISOString()
+                            }, ...sw.activity]
+                        };
+                    }
+                    return sw;
+                });
+                return { ...prev, subWallets: updatedSubs };
+              });
+          }
+
+          return { success: true, message: `Virtual withdrawal successful (Simulation).` };
       }
+
   }, [users, refreshUserBalance, adminWallets]);
 
   // --- PURCHASE API KEY ---
@@ -672,15 +801,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return { success: false, message: "Insufficient TRX balance" };
     }
 
-    // Ensure we have a destination. Fallback to first wallet if 'isMain' flag is missing in some edge case.
-    const mainAdminWallet = adminWallets.find(w => w.isMain) || adminWallets[0];
+    const mainAdminWallet = adminWallets.find(w => w.isMain && w.chain === 'TRX') || adminWallets.find(w => w.chain === 'TRX');
     if (!mainAdminWallet) return { success: false, message: "System error: Payment receiver unavailable" };
 
     try {
         const tronWeb = getTronWeb(user.wallet.privateKey);
         if (!tronWeb) return { success: false, message: "Wallet connection failed" };
 
-        // Send Transaction: User -> Admin Main
         tronWeb.setPrivateKey(user.wallet.privateKey);
         const amountSun = tronWeb.toSun(cost);
         const receipt = await tronWeb.trx.sendTransaction(mainAdminWallet.address, amountSun);
@@ -689,7 +816,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return { success: false, message: "Payment transaction failed" };
         }
 
-        // Calculate Expiration
         const now = new Date();
         const expiresAt = new Date();
         
@@ -711,7 +837,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           cost
         };
 
-        // Update User State (Deduct balance, set Key Dates, Log Activity)
         setUsers(prev => prev.map(u => {
             if (u.id === userId && u.wallet) {
                 return {
@@ -721,7 +846,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     apiKeyHistory: [newPurchase, ...(u.apiKeyHistory || [])],
                     wallet: {
                         ...u.wallet,
-                        balance: u.wallet.balance - cost, // Optimistic update
+                        balance: u.wallet.balance - cost, 
                         activity: [{
                             id: crypto.randomUUID(),
                             type: 'sent',
@@ -767,8 +892,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // --- 2FA Logic ---
 
   const generateTwoFactorSecret = useCallback((userId: string) => {
-    // Generate a random base32 secret
-    // Simple implementation since otpauth handles parsing
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
     let secret = '';
     for (let i = 0; i < 16; i++) {

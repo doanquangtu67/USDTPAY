@@ -10,14 +10,17 @@ export interface WalletActivity {
   timestamp: string;
 }
 
-export interface TronWallet {
+export type ChainType = 'TRX' | 'ETH' | 'SOL' | 'BNB';
+
+export interface CryptoWallet {
+  chain: ChainType;
   address: string;
-  privateKey: string;
+  privateKey: string; // For virtual wallets, this is a mock key
   balance: number;
-  hexAddress: string;
+  hexAddress?: string; // Only relevant for TRX/ETH/BNB-ish
   activity: WalletActivity[];
-  isMain?: boolean; // New field to identify the primary wallet
-  label?: string; // Optional label for UI
+  isMain?: boolean; 
+  label?: string; 
 }
 
 export interface ApiKeyPurchase {
@@ -43,8 +46,8 @@ export interface User {
   usage?: number;
   password?: string;
   subscriptionPlanId?: string;
-  wallet?: TronWallet; // User's personal Tron wallet
-  subWallets?: TronWallet[]; // Secondary wallets controlled by API key
+  wallet?: CryptoWallet; // User's personal Tron wallet (Main)
+  subWallets?: CryptoWallet[]; // Secondary wallets controlled by API key
   
   // 2FA Fields
   isTwoFactorEnabled?: boolean;

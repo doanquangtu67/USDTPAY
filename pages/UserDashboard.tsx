@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../contexts/StoreContext';
 import { Button } from '../components/Button';
+import { ChainType } from '../types';
 import { 
   Key, 
   Copy, 
@@ -21,7 +22,8 @@ import {
   Plus,
   History,
   Shield,
-  QrCode
+  QrCode,
+  Globe
 } from 'lucide-react';
 
 export const UserDashboard: React.FC = () => {
@@ -41,13 +43,14 @@ export const UserDashboard: React.FC = () => {
   const [walletTwoFactorCode, setWalletTwoFactorCode] = useState('');
   
   // Rental State
-  const [renting, setRenting] = useState<string | null>(null); // Stores ID of currently purchasing plan
+  const [renting, setRenting] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [isKeyActive, setIsKeyActive] = useState(false);
 
   // Sub-Wallet States
   const [showCreateSub, setShowCreateSub] = useState(false);
   const [inputApiKey, setInputApiKey] = useState('');
+  const [selectedChain, setSelectedChain] = useState<ChainType>('TRX');
   const [creatingSub, setCreatingSub] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState<{[key: string]: string}>({});
   const [subWalletTwoFactorCode, setSubWalletTwoFactorCode] = useState<{[key: string]: string}>({});
@@ -176,7 +179,7 @@ export const UserDashboard: React.FC = () => {
       e.preventDefault();
       if(!currentUser) return;
       setCreatingSub(true);
-      const res = await createSubWallet(currentUser.id, inputApiKey);
+      const res = await createSubWallet(currentUser.id, inputApiKey, selectedChain);
       setCreatingSub(false);
       
       if(res.success) {
@@ -211,7 +214,6 @@ export const UserDashboard: React.FC = () => {
       if(!currentUser) return;
       const { secret, otpauthUrl } = generateTwoFactorSecret(currentUser.id);
       setTempSecret(secret);
-      // Use a public QR API
       const encodedUrl = encodeURIComponent(otpauthUrl);
       setQrUrl(`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodedUrl}`);
       setShow2FASetup(true);
@@ -573,7 +575,17 @@ export const UserDashboard: React.FC = () => {
                                 <div className="mb-6 bg-dark-950 p-4 rounded-xl border border-white/10">
                                     <h4 className="text-sm font-bold text-white mb-2">Create New Sub-Wallet</h4>
                                     <p className="text-xs text-gray-400 mb-3">Enter your active API key to confirm identity and generate a new wallet.</p>
-                                    <form onSubmit={handleCreateSubWallet} className="flex gap-2">
+                                    <div className="flex gap-2 mb-2">
+                                        <select 
+                                            value={selectedChain}
+                                            onChange={(e) => setSelectedChain(e.target.value as ChainType)}
+                                            className="bg-dark-900 border border-white/10 rounded px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none"
+                                        >
+                                            <option value="TRX">TRX (Tron)</option>
+                                            <option value="ETH">ETH (Virtual)</option>
+                                            <option value="BNB">BNB (Virtual)</option>
+                                            <option value="SOL">SOL (Virtual)</option>
+                                        </select>
                                         <input 
                                             type="text" 
                                             value={inputApiKey}
@@ -581,10 +593,10 @@ export const UserDashboard: React.FC = () => {
                                             placeholder="Enter API Key (nx_...)" 
                                             className="flex-1 bg-dark-900 border border-white/10 rounded px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none"
                                         />
-                                        <Button type="submit" isLoading={creatingSub} disabled={!inputApiKey}>
+                                        <Button type="submit" isLoading={creatingSub} disabled={!inputApiKey} onClick={handleCreateSubWallet}>
                                             Create
                                         </Button>
-                                    </form>
+                                    </div>
                                 </div>
                             )}
 
@@ -598,7 +610,15 @@ export const UserDashboard: React.FC = () => {
                                         <div key={wallet.address} className="bg-dark-950/50 border border-white/5 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                                             <div>
                                                 <div className="flex items-center gap-2 mb-1">
-                                                    <span className="text-xs font-bold text-brand-400 uppercase">{wallet.label || `Wallet ${index + 1}`}</span>
+                                                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                                                        wallet.chain === 'TRX' ? 'border-red-500 text-red-400' :
+                                                        wallet.chain === 'ETH' ? 'border-blue-500 text-blue-400' :
+                                                        wallet.chain === 'BNB' ? 'border-yellow-500 text-yellow-400' :
+                                                        'border-purple-500 text-purple-400'
+                                                    }`}>
+                                                        {wallet.chain}
+                                                    </span>
+                                                    <span className="text-xs font-bold text-gray-300 uppercase">{wallet.label || `Wallet ${index + 1}`}</span>
                                                 </div>
                                                 <div className="flex items-center gap-2 mb-2">
                                                     <code className="text-xs text-gray-300 font-mono">{wallet.address}</code>
@@ -607,8 +627,10 @@ export const UserDashboard: React.FC = () => {
                                                     </button>
                                                 </div>
                                                 <div className="flex items-center gap-2">
-                                                    <span className="text-sm font-bold text-white">{wallet.balance} TRX</span>
-                                                    <span className="text-[10px] text-gray-500">≈ ${(wallet.balance * trxPrice).toFixed(2)}</span>
+                                                    <span className="text-sm font-bold text-white">{wallet.balance} {wallet.chain}</span>
+                                                    {wallet.chain === 'TRX' && (
+                                                        <span className="text-[10px] text-gray-500">≈ ${(wallet.balance * trxPrice).toFixed(2)}</span>
+                                                    )}
                                                 </div>
                                             </div>
 
@@ -640,7 +662,7 @@ export const UserDashboard: React.FC = () => {
                                                         isLoading={withdrawing === wallet.address}
                                                         disabled={currentUser.isTwoFactorEnabled && (!subWalletTwoFactorCode[wallet.address] || subWalletTwoFactorCode[wallet.address].length !== 6)}
                                                     >
-                                                        Withdraw
+                                                        {wallet.chain === 'TRX' ? 'Withdraw' : 'Simulate Out'}
                                                     </Button>
                                                 </div>
                                                 {currentUser.isTwoFactorEnabled && <span className="text-[10px] text-gray-500">2FA Required</span>}

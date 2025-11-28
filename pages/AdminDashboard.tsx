@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../contexts/StoreContext';
-import { UserRole } from '../types';
+import { UserRole, ChainType } from '../types';
 import { Button } from '../components/Button';
 import { 
   Users, 
@@ -21,23 +21,24 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   Clock,
-  TrendingUp,
   Star,
   Plus,
   Layers,
-  Calendar
+  Calendar,
+  Globe
 } from 'lucide-react';
 import { generateWelcomeEmail, generateApiDescription } from '../services/geminiService';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 export const AdminDashboard: React.FC = () => {
-  const { users, products, logout, deleteUser, toggleUserStatus, adminWallets, walletActivity, createAdminWallet, deleteAdminWallet, setMainWallet, refreshWalletBalance, sendTron, trxPrice } = useStore();
+  const { users, logout, deleteUser, toggleUserStatus, adminWallets, walletActivity, createAdminWallet, deleteAdminWallet, setMainWallet, refreshWalletBalance, sendTron, trxPrice } = useStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [loadingAi, setLoadingAi] = useState(false);
   
   // Wallet states
-  const [showPrivateKey, setShowPrivateKey] = useState<string | null>(null); // Stores ID of wallet to show key for
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showPrivateKey, setShowPrivateKey] = useState<string | null>(null); 
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [loadingBalance, setLoadingBalance] = useState(false);
   const [sendingTx, setSendingTx] = useState(false);
@@ -45,7 +46,7 @@ export const AdminDashboard: React.FC = () => {
   const [sendAmount, setSendAmount] = useState('');
   const [txStatus, setTxStatus] = useState<{success: boolean, message: string} | null>(null);
 
-  const mainWallet = useMemo(() => adminWallets.find(w => w.isMain) || adminWallets[0], [adminWallets]);
+  const mainWallet = useMemo(() => adminWallets.find(w => w.isMain && w.chain === 'TRX') || adminWallets.find(w => w.chain === 'TRX'), [adminWallets]);
 
   // Filter out the admin from the report table
   const userList = useMemo(() => {
@@ -56,10 +57,7 @@ export const AdminDashboard: React.FC = () => {
     );
   }, [users, searchTerm]);
 
-  // --- Real-time Stats Calculations ---
-  
   const activeRentals = useMemo(() => {
-    // Check if user has an API key that expires in the future
     const now = new Date();
     return users.filter(u => 
         u.role === UserRole.USER && 
@@ -68,26 +66,20 @@ export const AdminDashboard: React.FC = () => {
     ).length;
   }, [users]);
 
-  // Revenue is now difficult to calculate purely from state without a transaction ledger,
-  // so we will estimate it or base it on the current admin wallet balance for a "Cash on Hand" view.
-  // For now, let's just sum the wallet balances as "Treasury Value".
   const treasuryValue = useMemo(() => {
-    return adminWallets.reduce((total, w) => total + w.balance, 0);
+    return adminWallets.filter(w => w.chain === 'TRX').reduce((total, w) => total + w.balance, 0);
   }, [adminWallets]);
 
-  // --- Dynamic Chart Data: Last 7 Days ---
   const chartData = useMemo(() => {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const today = new Date();
     const data = [];
 
-    // Generate last 7 days
     for (let i = 6; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(today.getDate() - i);
-        const dayName = days[d.getDay()]; // e.g. "Mon"
+        const dayName = days[d.getDay()]; 
         
-        // Count users joined on this specific date
         const count = users.filter(u => {
             if (u.role !== UserRole.USER) return false;
             const joined = new Date(u.joinedAt);
@@ -119,8 +111,9 @@ export const AdminDashboard: React.FC = () => {
     setLoadingAi(false);
   };
 
-  const handleCreateWallet = async () => {
-    await createAdminWallet();
+  const handleCreateWallet = async (chain: ChainType) => {
+    await createAdminWallet(chain);
+    setShowCreateModal(false);
   };
 
   const handleDeleteWallet = (address: string) => {
@@ -158,7 +151,6 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Initial load and polling for wallet balance
   useEffect(() => {
     let intervalId: ReturnType<typeof setInterval>;
     if (adminWallets.length > 0) {
@@ -231,17 +223,33 @@ export const AdminDashboard: React.FC = () => {
                                 </div>
                                 <div>
                                     <h2 className="text-lg font-bold text-white">Wallet Management</h2>
-                                    <p className="text-xs text-red-400">Shasta Testnet • Multi-Wallet Support</p>
+                                    <p className="text-xs text-red-400">Multi-Chain Support</p>
                                 </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 relative">
                                 <Button 
                                     variant="secondary" 
-                                    onClick={handleCreateWallet} 
+                                    onClick={() => setShowCreateModal(!showCreateModal)} 
                                     className="text-xs py-1 h-8"
                                 >
                                     <Plus className="h-4 w-4 mr-1" /> New Wallet
                                 </Button>
+                                {showCreateModal && (
+                                    <div className="absolute top-full right-0 mt-2 bg-dark-900 border border-white/10 rounded-lg shadow-xl p-2 z-20 w-48 flex flex-col gap-1">
+                                        <button className="text-left px-3 py-2 text-sm text-gray-300 hover:bg-white/10 rounded" onClick={() => handleCreateWallet('TRX')}>
+                                            <span className="text-red-500 font-bold">TRX</span> Tron (Testnet)
+                                        </button>
+                                        <button className="text-left px-3 py-2 text-sm text-gray-300 hover:bg-white/10 rounded" onClick={() => handleCreateWallet('ETH')}>
+                                            <span className="text-blue-400 font-bold">ETH</span> Ethereum (Virtual)
+                                        </button>
+                                        <button className="text-left px-3 py-2 text-sm text-gray-300 hover:bg-white/10 rounded" onClick={() => handleCreateWallet('BNB')}>
+                                            <span className="text-yellow-400 font-bold">BNB</span> Binance (Virtual)
+                                        </button>
+                                        <button className="text-left px-3 py-2 text-sm text-gray-300 hover:bg-white/10 rounded" onClick={() => handleCreateWallet('SOL')}>
+                                            <span className="text-purple-400 font-bold">SOL</span> Solana (Virtual)
+                                        </button>
+                                    </div>
+                                )}
                                 <Button 
                                     variant="ghost" 
                                     onClick={handleRefreshBalance} 
@@ -256,7 +264,7 @@ export const AdminDashboard: React.FC = () => {
                         {adminWallets.length === 0 ? (
                             <div className="text-center py-8">
                                 <p className="text-gray-400 mb-4">No treasury wallets configured.</p>
-                                <Button onClick={handleCreateWallet} className="bg-red-600 hover:bg-red-700 text-white border-none">
+                                <Button onClick={() => handleCreateWallet('TRX')} className="bg-red-600 hover:bg-red-700 text-white border-none">
                                     Generate First Wallet
                                 </Button>
                             </div>
@@ -267,23 +275,29 @@ export const AdminDashboard: React.FC = () => {
                                     <table className="w-full text-left">
                                         <thead className="bg-white/5 text-gray-400 text-xs uppercase font-medium">
                                             <tr>
-                                                <th className="px-4 py-3">Type</th>
+                                                <th className="px-4 py-3">Chain</th>
                                                 <th className="px-4 py-3">Address</th>
                                                 <th className="px-4 py-3">Balance</th>
                                                 <th className="px-4 py-3 text-right">Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-white/5">
-                                            {adminWallets.map((wallet, index) => (
+                                            {adminWallets.map((wallet) => (
                                                 <tr key={wallet.address} className={`hover:bg-white/5 transition-colors ${wallet.isMain ? 'bg-red-500/5' : ''}`}>
                                                     <td className="px-4 py-3">
-                                                        {wallet.isMain ? (
-                                                            <span className="flex items-center gap-1 text-red-400 text-xs font-bold border border-red-500/20 bg-red-500/10 px-2 py-1 rounded w-fit">
-                                                                <Star className="h-3 w-3 fill-current" /> MAIN
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                                                                wallet.chain === 'TRX' ? 'border-red-500 text-red-400' :
+                                                                wallet.chain === 'ETH' ? 'border-blue-500 text-blue-400' :
+                                                                wallet.chain === 'BNB' ? 'border-yellow-500 text-yellow-400' :
+                                                                'border-purple-500 text-purple-400'
+                                                            }`}>
+                                                                {wallet.chain}
                                                             </span>
-                                                        ) : (
-                                                            <span className="text-gray-500 text-xs px-2 py-1">Secondary</span>
-                                                        )}
+                                                            {wallet.isMain && (
+                                                                <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                                                            )}
+                                                        </div>
                                                     </td>
                                                     <td className="px-4 py-3">
                                                         <div className="flex flex-col">
@@ -308,13 +322,15 @@ export const AdminDashboard: React.FC = () => {
                                                     </td>
                                                     <td className="px-4 py-3">
                                                         <div className="flex flex-col">
-                                                            <span className="text-sm font-bold text-white">{wallet.balance.toLocaleString()} TRX</span>
-                                                            <span className="text-[10px] text-gray-500">≈ ${(wallet.balance * trxPrice).toFixed(2)}</span>
+                                                            <span className="text-sm font-bold text-white">{wallet.balance.toLocaleString()} {wallet.chain}</span>
+                                                            {wallet.chain === 'TRX' && (
+                                                                <span className="text-[10px] text-gray-500">≈ ${(wallet.balance * trxPrice).toFixed(2)}</span>
+                                                            )}
                                                         </div>
                                                     </td>
                                                     <td className="px-4 py-3 text-right">
                                                         <div className="flex items-center justify-end gap-2">
-                                                            {!wallet.isMain && (
+                                                            {!wallet.isMain && wallet.chain === 'TRX' && (
                                                                 <Button 
                                                                     variant="secondary" 
                                                                     className="text-[10px] px-2 py-1 h-auto"
@@ -348,7 +364,7 @@ export const AdminDashboard: React.FC = () => {
                                             <Send className="h-4 w-4 text-red-400" /> Transfer TRX
                                         </h3>
                                         <p className="text-[10px] text-gray-500 mb-4">
-                                            Sending from <strong>Main Wallet</strong>: {mainWallet ? `${mainWallet.address.slice(0, 6)}...` : 'None'}
+                                            Sending from <strong>Main TRX Wallet</strong>: {mainWallet ? `${mainWallet.address.slice(0, 6)}...` : 'None'}
                                         </p>
                                         
                                         <form onSubmit={handleSendTron} className="space-y-3">
